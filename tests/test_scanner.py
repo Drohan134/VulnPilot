@@ -244,3 +244,82 @@ def test_fixed_version_is_not_affected():
     }
 
     assert evaluate_affected_version("2.2.5", advisory) == "not_affected"
+
+
+def test_deduplicate_shared_advisory_alias():
+    from scanner import deduplicate_findings
+
+    findings = [
+        {
+            "package": "requests",
+            "version": "2.31.0",
+            "id": "GHSA-example-1234",
+            "aliases": ["CVE-2024-1234"],
+            "references": ["https://example.com/ghsa"],
+            "affected_records": [],
+            "severity": "HIGH",
+        },
+        {
+            "package": "requests",
+            "version": "2.31.0",
+            "id": "PYSEC-2024-1234",
+            "aliases": ["CVE-2024-1234"],
+            "references": ["https://example.com/pysec"],
+            "affected_records": [],
+            "severity": "HIGH",
+        },
+    ]
+
+    result = deduplicate_findings(findings)
+
+    assert len(result) == 1
+    assert result[0]["id"] == "GHSA-example-1234"
+    assert "PYSEC-2024-1234" in result[0]["aliases"]
+    assert result[0]["duplicate_count"] == 2
+    assert len(result[0]["references"]) == 2
+
+
+def test_deduplicate_does_not_merge_different_cves():
+    from scanner import deduplicate_findings
+
+    findings = [
+        {
+            "package": "flask",
+            "version": "2.0.0",
+            "id": "GHSA-example-1111",
+            "aliases": ["CVE-2024-1111"],
+        },
+        {
+            "package": "flask",
+            "version": "2.0.0",
+            "id": "GHSA-example-2222",
+            "aliases": ["CVE-2024-2222"],
+        },
+    ]
+
+    result = deduplicate_findings(findings)
+
+    assert len(result) == 2
+
+
+def test_deduplicate_does_not_merge_different_versions():
+    from scanner import deduplicate_findings
+
+    findings = [
+        {
+            "package": "requests",
+            "version": "2.31.0",
+            "id": "GHSA-example-1234",
+            "aliases": ["CVE-2024-1234"],
+        },
+        {
+            "package": "requests",
+            "version": "2.32.0",
+            "id": "PYSEC-2024-1234",
+            "aliases": ["CVE-2024-1234"],
+        },
+    ]
+
+    result = deduplicate_findings(findings)
+
+    assert len(result) == 2
