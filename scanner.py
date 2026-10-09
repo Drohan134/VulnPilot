@@ -318,6 +318,112 @@ def query_osv(package: dict) -> dict:
     }
 
 
+
+def deduplicate_findings(findings: list[dict]) -> list[dict]:
+    """Merge duplicate advisory records using shared IDs and aliases."""
+
+    if not findings:
+        return []
+
+    parent = list(range(len(findings)))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first, second):
+        root_a = find(first)
+        root_b = find(second)
+        if root_a != root_b:
+            parent[root_b] = root_a
+
+    # Only compare findings for the same normalized package and version.
+    identifier_owner = {}
+
+    for index, finding in enumerate(findings):
+        package_key = normalize_package_name(finding.get("package", ""))
+        version_key = finding.get("version", "")
+
+        identifiers = {
+            str(value).strip().upper()
+            for value in [
+                finding.get("id", ""),
+                *(finding.get("aliases") or []),
+            ]
+            if value and str(value).strip()
+        }
+
+        group_key = (package_key, version_key)
+
+        for identifier in identifiers:
+            key = (group_key, identifier)
+
+            if key in identifier_owner:
+                union(index, identifier_owner[key])
+            else:
+                identifier_owner[key] = index
+
+    # Collect connected components.
+    components = {}
+    for index, finding in enumerate(findings):
+        components.setdefault(find(index), []).append(finding)
+
+    merged_findings = []
+
+    for records in components.values():
+        merged = dict(records[0])
+
+        all_ids = []
+        all_aliases = []
+        all_references = []
+        all_affected_records = []
+
+        def append_unique(target, values):
+            for value in values:
+                if value and value not in target:
+                    target.append(value)
+
+        for record in records:
+            append_unique(all_ids, [record.get("id")])
+            append_unique(all_ids, record.get("aliases") or [])
+            append_unique(all_aliases, record.get("aliases") or [])
+            append_unique(all_references, record.get("references") or [])
+            append_unique(
+                all_affected_records,
+                record.get("affected_records") or [],
+            )
+
+        # Prefer a GHSA identifier as the primary display ID when available.
+        primary_id = next(
+            (value for value in all_ids if value.upper().startswith("GHSA-")),
+            records[0].get("id", "Unknown"),
+        )
+
+        merged["id"] = primary_id
+        merged["aliases"] = [
+            value for value in all_ids if value != primary_id
+        ]
+        merged["references"] = all_references
+        merged["affected_records"] = all_affected_records
+
+        # Retain every original record for auditability.
+        merged["advisory_records"] = [dict(record) for record in records]
+        merged["advisory_ids"] = all_ids
+        merged["duplicate_count"] = len(records)
+
+        # Do not silently discard differences in severity.
+        merged["severity_values"] = list(dict.fromkeys(
+            str(record.get("severity", "UNKNOWN"))
+            for record in records
+        ))
+
+        merged_findings.append(merged)
+
+    return merged_findings
+
+
 def scan_requirements(text: str) -> dict:
     """Scan parsed requirements and return structured findings."""
     packages = parse_requirements(text)
@@ -368,7 +474,8 @@ def scan_requirements(text: str) -> dict:
         status = "partial"
     else:
         status = "completed"
-
+        
+    findings = deduplicate_findings(findings)
     checked_count = sum(
         item["status"] == "checked" for item in package_results
     )
